@@ -15,6 +15,7 @@ from datetime import datetime
 from tqdm import tqdm
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from datasets import load_dataset
+from PIL import Image
 
 
 parser = argparse.ArgumentParser(description="Run baseline evaluation")
@@ -116,6 +117,10 @@ for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
     # Get image and question from sample
     image = sample['image']
     question = sample['question']
+
+    # Load image if it's a path string
+    if isinstance(image, str):
+        image = Image.open(image)
 
     # Format as Qwen2-VL expects (conversation format)
     messages = [
