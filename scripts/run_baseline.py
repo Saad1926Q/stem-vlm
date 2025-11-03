@@ -34,6 +34,7 @@ parser.add_argument('--num_samples', type=int, default=None, help='Number of sam
 # Generation args
 parser.add_argument('--max_new_tokens', type=int, default=128)
 parser.add_argument('--temperature', type=float, default=0.0)
+parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference')
 
 # Output
 parser.add_argument('--output_dir', type=str, default='experiments/baseline')
@@ -55,6 +56,7 @@ if args.config:
     if 'generation' in config:
         args.max_new_tokens = config['generation'].get('max_new_tokens', args.max_new_tokens)
         args.temperature = config['generation'].get('temperature', args.temperature)
+        args.batch_size = config['generation'].get('batch_size', args.batch_size)
     if 'output' in config:
         args.output_dir = config['output'].get('dir', args.output_dir)
 
@@ -64,6 +66,7 @@ print("=" * 70)
 print(f"Model: {args.model_name}")
 print(f"Dataset: {args.dataset}")
 print(f"Num samples: {args.num_samples if args.num_samples else 'all'}")
+print(f"Batch size: {args.batch_size}")
 print(f"Output: {args.output_dir}")
 print("=" * 70)
 
@@ -114,11 +117,12 @@ results = []
 
 MAX_DIMENSION = 512
 
-for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
+# Process dataset in batches
+batch_samples = []
+batch_indices = []
 
+for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
     # Get image and question from sample
-    # MathVerse: uses 'image' field (PIL Image) and 'question' field
-    # ScienceQA: uses 'image' (already a PIL Image, or None for text-only)
     image = sample.get('image')
     question = sample['question']
 
@@ -127,64 +131,84 @@ for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
         print(f"Skipping sample {idx}: no image")
         continue
 
-
+    # Resize large images
     if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
         image.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
 
-    # Format as Qwen2-VL expects (conversation format)
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": question}
+    # Add to batch
+    batch_samples.append({
+        'image': image,
+        'question': question,
+        'ground_truth': sample.get("answer", None)
+    })
+    batch_indices.append(idx)
+
+    # Process batch when full (or last batch)
+    if len(batch_samples) == args.batch_size or idx == len(dataset) - 1:
+        # Format all samples in batch
+        text_prompts = []
+        images = []
+
+        for batch_sample in batch_samples:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": batch_sample['image']},
+                        {"type": "text", "text": batch_sample['question']}
+                    ]
+                }
             ]
-        }
-    ]
+            text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+            text_prompts.append(text_prompt)
+            images.append(batch_sample['image'])
 
-    text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-
-    # Process inputs (convert to tensors)
-    inputs = processor(
-        text=[text_prompt],
-        images=[image],
-        padding=True,
-        return_tensors="pt"
-    )
-
-    # Move to GPU/CPU
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-
-    # Generate answer
-    # torch.no_grad(): Don't compute gradients (saves memory)
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            do_sample=(args.temperature > 0)  # Only sample if temp > 0
+        # Process all inputs together
+        inputs = processor(
+            text=text_prompts,
+            images=images,
+            padding=True,
+            return_tensors="pt"
         )
 
-    # Decode output tokens back to text
-    generated_text = processor.batch_decode(
-        output_ids,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=True
-    )[0]
+        # Move to GPU/CPU
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    # Extract just the answer (after "assistant\n")
-    if "assistant\n" in generated_text:
-        prediction = generated_text.split("assistant\n")[-1].strip()
-    else:
-        prediction = generated_text.strip()
+        # Generate answers for entire batch
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                do_sample=(args.temperature > 0)
+            )
 
-    # Save result
-    results.append({
-        "sample_id": idx,
-        "question": question,
-        "prediction": prediction,
-        "ground_truth": sample.get("answer", None)
-    })
+        # Decode all outputs
+        generated_texts = processor.batch_decode(
+            output_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True
+        )
+
+        # Process each output in the batch
+        for batch_idx, generated_text in enumerate(generated_texts):
+            # Extract just the answer (after "assistant\n")
+            if "assistant\n" in generated_text:
+                prediction = generated_text.split("assistant\n")[-1].strip()
+            else:
+                prediction = generated_text.strip()
+
+            # Save result
+            results.append({
+                "sample_id": batch_indices[batch_idx],
+                "question": batch_samples[batch_idx]['question'],
+                "prediction": prediction,
+                "ground_truth": batch_samples[batch_idx]['ground_truth']
+            })
+
+        # Clear batch
+        batch_samples = []
+        batch_indices = []
 
 print(f"✓ Evaluated {len(results)} samples")
 
@@ -207,6 +231,7 @@ with open(predictions_file, 'w') as f:
             "dtype": args.dtype,
             "max_new_tokens": args.max_new_tokens,
             "temperature": args.temperature,
+            "batch_size": args.batch_size,
         },
         "predictions": results
     }, f, indent=2)

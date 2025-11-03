@@ -18,6 +18,7 @@ generation:
   max_new_tokens: 128
   temperature: 0.0  # 0 = deterministic (same answer every time)
   do_sample: false  # false = greedy decoding (most likely tokens)
+  batch_size: 4  # Number of samples to process in parallel (higher = faster but more memory)
 
 # Output settings
 output:
