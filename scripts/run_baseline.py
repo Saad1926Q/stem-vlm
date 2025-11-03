@@ -115,12 +115,15 @@ results = []
 for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
 
     # Get image and question from sample
-    image = sample['image']
+    # MathVista: uses 'decoded_image' (sample['image'] is just a string path)
+    # ScienceQA: uses 'image' (already a PIL Image, or None for text-only)
+    image = sample.get('decoded_image', sample.get('image'))
     question = sample['question']
 
-    # Load image if it's a path string
-    if isinstance(image, str):
-        image = Image.open(image)
+    # Skip text-only questions (no image)
+    if image is None:
+        print(f"Skipping sample {idx}: no image")
+        continue
 
     # Format as Qwen2-VL expects (conversation format)
     messages = [
