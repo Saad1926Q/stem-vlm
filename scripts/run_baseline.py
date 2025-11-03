@@ -117,98 +117,104 @@ results = []
 
 MAX_DIMENSION = 512
 
-# Process dataset in batches
-batch_samples = []
-batch_indices = []
-
-for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
-    # Get image and question from sample
-    image = sample.get('image')
-    question = sample['question']
-
-    # Skip text-only questions (no image)
+def preprocess_image(image):
+    """Resize image if it's too large."""
     if image is None:
-        print(f"Skipping sample {idx}: no image")
+        return None
+    if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
+        image = image.copy()
+        image.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
+    return image
+
+# Process dataset in batches using HuggingFace's iter()
+sample_idx = 0
+num_batches = (len(dataset) + args.batch_size - 1) // args.batch_size
+
+for batch in tqdm(dataset.iter(batch_size=args.batch_size), desc="Evaluating", total=num_batches):
+    # Filter out samples without images and preprocess
+    text_prompts = []
+    images = []
+    valid_indices = []
+    questions = []
+    ground_truths = []
+
+    for i, (image, question) in enumerate(zip(batch['image'], batch['question'])):
+        current_idx = sample_idx + i
+
+        # Skip text-only questions (no image)
+        if image is None:
+            print(f"\nSkipping sample {current_idx}: no image")
+            continue
+
+        # Resize large images
+        image = preprocess_image(image)
+
+        # Format as Qwen2-VL expects
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": question}
+                ]
+            }
+        ]
+
+        text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+        text_prompts.append(text_prompt)
+        images.append(image)
+        valid_indices.append(current_idx)
+        questions.append(question)
+        ground_truths.append(batch.get('answer', [None] * len(batch['image']))[i])
+
+    sample_idx += len(batch['image'])
+
+    # Skip empty batches
+    if len(text_prompts) == 0:
         continue
 
-    # Resize large images
-    if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
-        image.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
+    # Process all inputs together
+    inputs = processor(
+        text=text_prompts,
+        images=images,
+        padding=True,
+        return_tensors="pt"
+    )
 
-    # Add to batch
-    batch_samples.append({
-        'image': image,
-        'question': question,
-        'ground_truth': sample.get("answer", None)
-    })
-    batch_indices.append(idx)
+    # Move to GPU/CPU
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    # Process batch when full (or last batch)
-    if len(batch_samples) == args.batch_size or idx == len(dataset) - 1:
-        # Format all samples in batch
-        text_prompts = []
-        images = []
-
-        for batch_sample in batch_samples:
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": batch_sample['image']},
-                        {"type": "text", "text": batch_sample['question']}
-                    ]
-                }
-            ]
-            text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-            text_prompts.append(text_prompt)
-            images.append(batch_sample['image'])
-
-        # Process all inputs together
-        inputs = processor(
-            text=text_prompts,
-            images=images,
-            padding=True,
-            return_tensors="pt"
+    # Generate answers for entire batch
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            do_sample=(args.temperature > 0)
         )
 
-        # Move to GPU/CPU
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    # Decode all outputs
+    generated_texts = processor.batch_decode(
+        output_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=True
+    )
 
-        # Generate answers for entire batch
-        with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                do_sample=(args.temperature > 0)
-            )
+    # Process each output in the batch
+    for idx, generated_text, question, ground_truth in zip(valid_indices, generated_texts, questions, ground_truths):
+        # Extract just the answer (after "assistant\n")
+        if "assistant\n" in generated_text:
+            prediction = generated_text.split("assistant\n")[-1].strip()
+        else:
+            prediction = generated_text.strip()
 
-        # Decode all outputs
-        generated_texts = processor.batch_decode(
-            output_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True
-        )
-
-        # Process each output in the batch
-        for batch_idx, generated_text in enumerate(generated_texts):
-            # Extract just the answer (after "assistant\n")
-            if "assistant\n" in generated_text:
-                prediction = generated_text.split("assistant\n")[-1].strip()
-            else:
-                prediction = generated_text.strip()
-
-            # Save result
-            results.append({
-                "sample_id": batch_indices[batch_idx],
-                "question": batch_samples[batch_idx]['question'],
-                "prediction": prediction,
-                "ground_truth": batch_samples[batch_idx]['ground_truth']
-            })
-
-        # Clear batch
-        batch_samples = []
-        batch_indices = []
+        # Save result
+        results.append({
+            "sample_id": idx,
+            "question": question,
+            "prediction": prediction,
+            "ground_truth": ground_truth
+        })
 
 print(f"✓ Evaluated {len(results)} samples")
 
