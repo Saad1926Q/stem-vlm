@@ -1,0 +1,26 @@
+# Baseline Evaluation Configuration
+# This file contains all settings for running baseline evaluation
+
+# Model settings
+model:
+  name: "Qwen/Qwen2-VL-2B-Instruct"
+  dtype: "bfloat16"  # Options: "bfloat16", "float16", "float32"
+  device_map: "auto"  # "auto" = use GPU if available, else CPU
+
+# Dataset settings
+dataset:
+  name: "mathvista"  # Options: "mathvista", "scienceqa"
+  split: "test"
+  num_samples: null  # null = all samples, or set a number like 10 for testing
+
+# Generation settings (how the model generates answers)
+generation:
+  max_new_tokens: 128
+  temperature: 0.0  # 0 = deterministic (same answer every time)
+  do_sample: false  # false = greedy decoding (most likely tokens)
+
+# Output settings
+output:
+  dir: "experiments/baseline"
+  save_predictions: true
+  save_metadata: true
