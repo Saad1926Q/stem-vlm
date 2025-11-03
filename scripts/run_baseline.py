@@ -112,6 +112,8 @@ print(f"✓ Loaded {len(dataset)} samples")
 
 results = []
 
+MAX_DIMENSION = 512
+
 for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
 
     # Get image and question from sample
@@ -124,6 +126,10 @@ for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
     if image is None:
         print(f"Skipping sample {idx}: no image")
         continue
+
+
+    if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
+        image.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
 
     # Format as Qwen2-VL expects (conversation format)
     messages = [
