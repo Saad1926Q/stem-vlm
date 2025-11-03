@@ -69,7 +69,10 @@ print("=" * 70)
 
 
 # Load processor (handles image + text preprocessing)
-processor = AutoProcessor.from_pretrained(args.model_name)
+processor = AutoProcessor.from_pretrained(
+    args.model_name,
+    trust_remote_code=True
+)
 
 dtype_map = {
     'bfloat16': torch.bfloat16,
@@ -83,7 +86,8 @@ dtype = dtype_map[args.dtype]
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     args.model_name,
     torch_dtype=dtype,
-    device_map="auto"
+    device_map="auto",
+    trust_remote_code=True
 )
 model.eval()  
 
