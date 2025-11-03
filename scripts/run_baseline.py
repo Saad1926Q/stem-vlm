@@ -28,7 +28,7 @@ parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct
 parser.add_argument('--dtype', type=str, default='bfloat16', choices=['bfloat16', 'float16', 'float32'])
 
 # Dataset args
-parser.add_argument('--dataset', type=str, default='mathvista', choices=['mathvista', 'scienceqa'])
+parser.add_argument('--dataset', type=str, default='mathverse', choices=['mathverse', 'scienceqa'])
 parser.add_argument('--num_samples', type=int, default=None, help='Number of samples (None=all)')
 
 # Generation args
@@ -98,8 +98,8 @@ if torch.cuda.is_available():
     print(f"  GPU memory: {mem_gb:.2f} GB")
 
 
-if args.dataset == 'mathvista':
-    dataset = load_dataset("AI4Math/MathVista", split="test")
+if args.dataset == 'mathverse':
+    dataset = load_dataset("AI4Math/MathVerse", "testmini")['testmini']
 elif args.dataset == 'scienceqa':
     dataset = load_dataset("derek-thomas/ScienceQA", split="test")
 
@@ -115,9 +115,9 @@ results = []
 for idx, sample in enumerate(tqdm(dataset, desc="Evaluating")):
 
     # Get image and question from sample
-    # MathVista: uses 'decoded_image' (sample['image'] is just a string path)
+    # MathVerse: uses 'image' field (PIL Image) and 'question' field
     # ScienceQA: uses 'image' (already a PIL Image, or None for text-only)
-    image = sample.get('decoded_image', sample.get('image'))
+    image = sample.get('image')
     question = sample['question']
 
     # Skip text-only questions (no image)

@@ -6,11 +6,11 @@ Run this first to cache datasets locally.
 from datasets import load_dataset
 
 print("=" * 60)
-print("Downloading MathVista...")
+print("Downloading MathVerse...")
 print("=" * 60)
-mathvista = load_dataset("AI4Math/MathVista", split="test")
+mathverse = load_dataset("AI4Math/MathVerse", "testmini")
 
-print(f"Downloaded {len(mathvista)} samples")
+print(f"Downloaded {len(mathverse['testmini'])} samples")
 
 print("\n" + "=" * 60)
 print("Downloading ScienceQA...")
