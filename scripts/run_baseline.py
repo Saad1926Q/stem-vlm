@@ -16,6 +16,48 @@ from tqdm import tqdm
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from datasets import load_dataset
 from PIL import Image
+from multiprocessing import Pool, cpu_count
+
+
+def process_batch_element(args):
+    """
+    Worker function that preprocesses a single sample in parallel.
+
+    Takes: (image, question, index, ground_truth, max_dimension)
+    Returns: dict with preprocessed data, or None if image is missing
+
+    Does image resizing + message dict creation.
+    Note: processor.apply_chat_template() stays in main process (can't pickle processor).
+    """
+    image, question, idx, ground_truth, max_dimension = args
+
+    # Skip samples without images
+    if image is None:
+        return None
+
+    # Resize image if too large
+    if image.width > max_dimension or image.height > max_dimension:
+        image = image.copy()
+        image.thumbnail((max_dimension, max_dimension))
+
+    # Create message dictionary
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": question}
+            ]
+        }
+    ]
+
+    return {
+        "messages": messages,
+        "image": image,
+        "idx": idx,
+        "question": question,
+        "ground_truth": ground_truth
+    }
 
 
 parser = argparse.ArgumentParser(description="Run baseline evaluation")
@@ -117,55 +159,60 @@ results = []
 
 MAX_DIMENSION = 512
 
-def preprocess_image(image):
-    """Resize image if it's too large."""
-    if image is None:
-        return None
-    if image.width > MAX_DIMENSION or image.height > MAX_DIMENSION:
-        image = image.copy()
-        image.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
-    return image
+# Setup multiprocessing pool for parallel preprocessing
+# Workers = min(cpu_count, batch_size) because:
+# - If batch_size > cpus: workers reuse and process multiple samples each
+# - If batch_size < cpus: no point creating extra idle workers
+num_workers = min(cpu_count(), args.batch_size)
+print(f"✓ Using {num_workers} worker processes (batch_size={args.batch_size}, cpus={cpu_count()})")
+
+# Create pool once, reuse for all batches (avoids repeated spawn overhead)
+pool = Pool(processes=num_workers)
 
 # Process dataset in batches using HuggingFace's iter()
 sample_idx = 0
 num_batches = (len(dataset) + args.batch_size - 1) // args.batch_size
 
 for batch in tqdm(dataset.iter(batch_size=args.batch_size), desc="Evaluating", total=num_batches):
-    # Filter out samples without images and preprocess
+    
+    # Prepare inputs for parallel processing
+    batch_inputs = [
+        (
+            batch['image'][i],
+            batch['question'][i],
+            sample_idx + i,
+            batch.get('answer', [None] * len(batch['image']))[i],
+            MAX_DIMENSION
+        )
+        for i in range(len(batch['image']))
+    ]
+
+    # Process all samples in parallel across worker processes
+    processed_elements = pool.map(process_batch_element, batch_inputs)
+
+    # Filter results and apply chat template
     text_prompts = []
     images = []
     valid_indices = []
     questions = []
     ground_truths = []
 
-    for i, (image, question) in enumerate(zip(batch['image'], batch['question'])):
-        current_idx = sample_idx + i
-
-        # Skip text-only questions (no image)
-        if image is None:
-            print(f"\nSkipping sample {current_idx}: no image")
+    for elem in processed_elements:
+        # Skip samples that had no image
+        if elem is None:
             continue
 
-        # Resize large images
-        image = preprocess_image(image)
+        # Apply chat template (can't do this in workers - processor not picklable)
+        text_prompt = processor.apply_chat_template(
+            elem["messages"],
+            add_generation_prompt=True
+        )
 
-        # Format as Qwen2-VL expects
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": question}
-                ]
-            }
-        ]
-
-        text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
         text_prompts.append(text_prompt)
-        images.append(image)
-        valid_indices.append(current_idx)
-        questions.append(question)
-        ground_truths.append(batch.get('answer', [None] * len(batch['image']))[i])
+        images.append(elem["image"])
+        valid_indices.append(elem["idx"])
+        questions.append(elem["question"])
+        ground_truths.append(elem["ground_truth"])
 
     sample_idx += len(batch['image'])
 
@@ -215,6 +262,10 @@ for batch in tqdm(dataset.iter(batch_size=args.batch_size), desc="Evaluating", t
             "prediction": prediction,
             "ground_truth": ground_truth
         })
+
+# Cleanup: close pool and wait for workers to finish
+pool.close()  # No more tasks will be submitted
+pool.join()   # Wait for all workers to terminate
 
 print(f"✓ Evaluated {len(results)} samples")
 
