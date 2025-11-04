@@ -1,9 +1,9 @@
 """
-Run baseline evaluation on MathVista or ScienceQA.
+Run inference and evaluation on vision-language benchmarks.
 
 Usage:
-    python scripts/run_baseline.py --config configs/baseline.yaml
-    python scripts/run_baseline.py --dataset mathvista --num_samples 10
+    python scripts/run_inference.py --config configs/baseline.yaml
+    python scripts/run_inference.py --dataset mathverse --num_samples 10
 """
 
 import argparse
@@ -60,7 +60,7 @@ def process_batch_element(args):
     }
 
 
-parser = argparse.ArgumentParser(description="Run baseline evaluation")
+parser = argparse.ArgumentParser(description="Run inference and evaluation on VLM benchmarks")
 
 # Config file
 parser.add_argument('--config', type=str, help='Path to YAML config file')
@@ -103,7 +103,7 @@ if args.config:
         args.output_dir = config['output'].get('dir', args.output_dir)
 
 print("=" * 70)
-print("STEM-VLM Baseline Evaluation")
+print("STEM-VLM Inference")
 print("=" * 70)
 print(f"Model: {args.model_name}")
 print(f"Dataset: {args.dataset}")
@@ -160,16 +160,12 @@ results = []
 MAX_DIMENSION = 512
 
 # Setup multiprocessing pool for parallel preprocessing
-# Workers = min(cpu_count, batch_size) because:
-# - If batch_size > cpus: workers reuse and process multiple samples each
-# - If batch_size < cpus: no point creating extra idle workers
 num_workers = min(cpu_count(), args.batch_size)
 print(f"✓ Using {num_workers} worker processes (batch_size={args.batch_size}, cpus={cpu_count()})")
 
 # Create pool once, reuse for all batches (avoids repeated spawn overhead)
 pool = Pool(processes=num_workers)
 
-# Process dataset in batches using HuggingFace's iter()
 sample_idx = 0
 num_batches = (len(dataset) + args.batch_size - 1) // args.batch_size
 
