@@ -1,0 +1,41 @@
+# Training configuration for Qwen2-VL-2B-Instruct on ScienceQA
+
+data:
+  train_data: data/processed/scienceqa_train.pkl
+  val_data: data/processed/scienceqa_validation.pkl
+
+model:
+  name: Qwen/Qwen2-VL-2B-Instruct
+  load_in_4bit: true
+  max_seq_length: 2048
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.05
+
+training:
+  num_epochs: 3
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  warmup_steps: 5
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler_type: linear
+
+checkpointing:
+  save_steps: 100
+  save_strategy: steps
+  save_total_limit: 3
+  load_best_at_end: true
+
+wandb:
+  enabled: true
+  project: stem-vlm-training
+  entity: null
+  run_name: null
+
+output:
+  dir: experiments/runs
+  run_name: null

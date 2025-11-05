@@ -1,2 +1,35 @@
 .venv
 CLAUDE.md
+
+# Model weights and checkpoints 
+models/
+experiments/runs/
+experiments/inference/
+
+
+# Data
+
+data/processed
+
+# Experiments
+experiments
+
+# WandB logs and cache
+wandb/
+.wandb/
+
+# Python cache
+__pycache__/
+
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+
+
+
+# Environment variables
+.env

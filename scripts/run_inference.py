@@ -4,6 +4,7 @@ Run inference and evaluation on vision-language benchmarks.
 Usage:
     python scripts/run_inference.py --config configs/baseline.yaml
     python scripts/run_inference.py --dataset mathverse --num_samples 10
+    python scripts/run_inference.py --model_name Qwen/Qwen2-VL-2B-Instruct --adapter_path experiments/runs/my-run/checkpoint-final
 """
 
 import argparse
@@ -17,6 +18,7 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from datasets import load_dataset
 from PIL import Image
 from multiprocessing import Pool, cpu_count
+from peft import PeftModel
 
 
 def process_batch_element(args):
@@ -67,6 +69,7 @@ parser.add_argument('--config', type=str, help='Path to YAML config file')
 
 # Model args
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
+parser.add_argument('--adapter_path', type=str, default=None, help='Path to LoRA adapter weights (optional)')
 parser.add_argument('--dtype', type=str, default='bfloat16', choices=['bfloat16', 'float16', 'float32'])
 
 # Dataset args
@@ -91,6 +94,7 @@ if args.config:
     # Override with config values (command-line args take priority)
     if 'model' in config:
         args.model_name = config['model'].get('name', args.model_name)
+        args.adapter_path = config['model'].get('adapter_path', args.adapter_path)
         args.dtype = config['model'].get('dtype', args.dtype)
     if 'dataset' in config:
         args.dataset = config['dataset'].get('name', args.dataset)
@@ -106,6 +110,8 @@ print("=" * 70)
 print("STEM-VLM Inference")
 print("=" * 70)
 print(f"Model: {args.model_name}")
+if args.adapter_path:
+    print(f"Adapter: {args.adapter_path}")
 print(f"Dataset: {args.dataset}")
 print(f"Num samples: {args.num_samples if args.num_samples else 'all'}")
 print(f"Batch size: {args.batch_size}")
@@ -128,19 +134,24 @@ dtype_map = {
 dtype = dtype_map[args.dtype]
 
 # Load model
-# device_map="auto": Automatically use GPU if available
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     args.model_name,
     torch_dtype=dtype,
     device_map="auto",
     trust_remote_code=True
 )
-model.eval()  
 
-print(f" Model loaded on {model.device}")
+# Load LoRA adapter if provided
+if args.adapter_path:
+    print(f"Loading LoRA adapter from {args.adapter_path}...")
+    model = PeftModel.from_pretrained(model, args.adapter_path)
+
+model.eval()
+
+print(f"Model loaded on {model.device}")
 if torch.cuda.is_available():
     mem_gb = torch.cuda.memory_allocated() / 1024**3
-    print(f"  GPU memory: {mem_gb:.2f} GB")
+    print(f"GPU memory: {mem_gb:.2f} GB")
 
 
 if args.dataset == 'mathverse':
@@ -278,6 +289,7 @@ with open(predictions_file, 'w') as f:
     json.dump({
         "metadata": {
             "model": args.model_name,
+            "adapter_path": args.adapter_path,
             "dataset": args.dataset,
             "num_samples": len(results),
             "timestamp": timestamp,
