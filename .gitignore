@@ -12,7 +12,7 @@ experiments/inference/
 data/processed
 
 # Experiments
-experiments
+experiments/
 
 # WandB logs and cache
 wandb/

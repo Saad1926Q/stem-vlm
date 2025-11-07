@@ -19,6 +19,8 @@ from datasets import load_dataset
 from PIL import Image
 from multiprocessing import Pool, cpu_count
 from peft import PeftModel
+import time
+import wandb
 
 
 def process_batch_element(args):
@@ -70,6 +72,7 @@ parser.add_argument('--config', type=str, help='Path to YAML config file')
 # Model args
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
 parser.add_argument('--adapter_path', type=str, default=None, help='Path to LoRA adapter weights (optional)')
+parser.add_argument('--model_artifact', type=str, default=None, help='WandB artifact name (e.g., "Qwen2-VL-2B-Instruct-baseline-20250107_123456:v0" or with alias "Qwen2-VL-2B-Instruct-baseline-20250107_123456:baseline")')
 parser.add_argument('--dtype', type=str, default='bfloat16', choices=['bfloat16', 'float16', 'float32'])
 
 # Dataset args
@@ -84,6 +87,13 @@ parser.add_argument('--batch_size', type=int, default=1, help='Batch size for in
 # Output
 parser.add_argument('--output_dir', type=str, default='experiments/baseline')
 
+# WandB args
+parser.add_argument('--use_wandb', action='store_true', help='Enable WandB logging')
+parser.add_argument('--wandb_project', type=str, default='stem-vlm', help='WandB project name')
+parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity/username')
+parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name')
+parser.add_argument('--wandb_tags', type=str, nargs='+', default=None, help='WandB tags')
+
 args = parser.parse_args()
 
 # Load config file if provided
@@ -95,6 +105,7 @@ if args.config:
     if 'model' in config:
         args.model_name = config['model'].get('name', args.model_name)
         args.adapter_path = config['model'].get('adapter_path', args.adapter_path)
+        args.model_artifact = config['model'].get('artifact', args.model_artifact)
         args.dtype = config['model'].get('dtype', args.dtype)
     if 'dataset' in config:
         args.dataset = config['dataset'].get('name', args.dataset)
@@ -105,18 +116,78 @@ if args.config:
         args.batch_size = config['generation'].get('batch_size', args.batch_size)
     if 'output' in config:
         args.output_dir = config['output'].get('dir', args.output_dir)
+    if 'wandb' in config:
+        args.use_wandb = config['wandb'].get('enabled', args.use_wandb)
+        args.wandb_project = config['wandb'].get('project', args.wandb_project)
+        args.wandb_entity = config['wandb'].get('entity', args.wandb_entity)
+        args.wandb_run_name = config['wandb'].get('run_name', args.wandb_run_name)
+        args.wandb_tags = config['wandb'].get('tags', args.wandb_tags)
 
 print("=" * 70)
 print("STEM-VLM Inference")
 print("=" * 70)
 print(f"Model: {args.model_name}")
-if args.adapter_path:
+if args.model_artifact:
+    print(f"WandB Artifact: {args.model_artifact}")
+elif args.adapter_path:
     print(f"Adapter: {args.adapter_path}")
 print(f"Dataset: {args.dataset}")
 print(f"Num samples: {args.num_samples if args.num_samples else 'all'}")
 print(f"Batch size: {args.batch_size}")
 print(f"Output: {args.output_dir}")
+print(f"WandB: {'enabled' if args.use_wandb else 'disabled'}")
 print("=" * 70)
+
+if args.model_artifact:
+    print(f"\nDownloading model from WandB artifact: {args.model_artifact}")
+    api = wandb.Api()
+
+    if args.wandb_entity:
+        artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.model_artifact}"
+    else:
+        artifact_ref = f"{args.wandb_project}/{args.model_artifact}"
+
+    artifact = api.artifact(artifact_ref, type="model")
+    artifact_dir = artifact.download()
+    args.adapter_path = artifact_dir
+    print(f"✓ Model downloaded to: {artifact_dir}")
+
+# Initialize WandB if enabled
+wandb_run = None
+if args.use_wandb:
+    # Auto-generate run name if not provided
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.wandb_run_name is None:
+        args.wandb_run_name = f"inference-{args.dataset}-{timestamp}"
+
+    # Prepare tags
+    tags = args.wandb_tags if args.wandb_tags else []
+    tags.append("inference")
+    tags.append(args.dataset)
+    if args.adapter_path:
+        tags.append("finetuned")
+    else:
+        tags.append("baseline")
+
+    # Initialize WandB run
+    wandb_run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        config=vars(args),
+        tags=tags,
+        notes=f"Inference on {args.dataset} using {args.model_name}"
+    )
+    print(f"✓ WandB run initialized: {wandb_run.url}")
+
+    # Link model artifact to this run for lineage tracking
+    if args.model_artifact:
+        if args.wandb_entity:
+            artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.model_artifact}"
+        else:
+            artifact_ref = f"{args.wandb_project}/{args.model_artifact}"
+        wandb_run.use_artifact(artifact_ref, type="model")
+        print(f"✓ Linked model artifact to run")
 
 
 
@@ -167,6 +238,9 @@ print(f"✓ Loaded {len(dataset)} samples")
 
 
 results = []
+
+# Track inference timing
+inference_start_time = time.time()
 
 MAX_DIMENSION = 512
 
@@ -283,23 +357,30 @@ output_dir.mkdir(parents=True, exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+# Calculate inference time
+inference_time = time.time() - inference_start_time
+
 # Save predictions to JSON
 predictions_file = output_dir / f"{args.dataset}_predictions_{timestamp}.json"
+predictions_data = {
+    "metadata": {
+        "model": args.model_name,
+        "adapter_path": args.adapter_path,
+        "dataset": args.dataset,
+        "num_samples": len(results),
+        "timestamp": timestamp,
+        "dtype": args.dtype,
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "batch_size": args.batch_size,
+        "inference_time_seconds": inference_time,
+        "wandb_run_id": wandb_run.id if wandb_run else None,
+    },
+    "predictions": results
+}
+
 with open(predictions_file, 'w') as f:
-    json.dump({
-        "metadata": {
-            "model": args.model_name,
-            "adapter_path": args.adapter_path,
-            "dataset": args.dataset,
-            "num_samples": len(results),
-            "timestamp": timestamp,
-            "dtype": args.dtype,
-            "max_new_tokens": args.max_new_tokens,
-            "temperature": args.temperature,
-            "batch_size": args.batch_size,
-        },
-        "predictions": results
-    }, f, indent=2)
+    json.dump(predictions_data, f, indent=2)
 
 print(f"✓ Predictions saved to: {predictions_file}")
 
@@ -308,6 +389,47 @@ config_file = output_dir / f"config_{timestamp}.yaml"
 with open(config_file, 'w') as f:
     yaml.dump(vars(args), f)
 print(f"✓ Config saved to: {config_file}")
+
+# Log to WandB if enabled
+if wandb_run:
+    # Log summary metrics
+    wandb.log({
+        "num_samples": len(results),
+        "inference_time_seconds": inference_time,
+        "avg_time_per_sample": inference_time / len(results) if len(results) > 0 else 0,
+    })
+
+    # Create predictions table for first few samples (for inspection in WandB UI)
+    sample_size = min(20, len(results))  # Log first 20 samples as table
+    table = wandb.Table(columns=["sample_id", "question", "prediction", "ground_truth"])
+    for result in results[:sample_size]:
+        table.add_data(
+            result["sample_id"],
+            result["question"][:100] + "..." if len(result["question"]) > 100 else result["question"],
+            result["prediction"],
+            str(result["ground_truth"])
+        )
+    wandb.log({"predictions_sample": table})
+
+    # Save predictions file as WandB artifact
+    predictions_artifact = wandb.Artifact(
+        name=f"{args.dataset}-predictions",
+        type="predictions",
+        description=f"Predictions on {args.dataset} using {args.model_name}",
+        metadata={
+            "model": args.model_name,
+            "dataset": args.dataset,
+            "num_samples": len(results),
+            "inference_time": inference_time,
+        }
+    )
+    predictions_artifact.add_file(str(predictions_file))
+    wandb_run.log_artifact(predictions_artifact)
+
+    print(f"✓ Results logged to WandB: {wandb_run.url}")
+
+    # Finish WandB run
+    wandb_run.finish()
 
 print("\n" + "=" * 70)
 print("Done!")

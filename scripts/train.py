@@ -3,20 +3,21 @@ Train Qwen2-VL model on ScienceQA using Unsloth.
 
 Usage:
     python scripts/train.py --config configs/train_scienceqa.yaml
-    python scripts/train.py --train_data data/processed/scienceqa_train.pkl --num_epochs 3
+    python scripts/train.py --num_epochs 3 --max_samples 1000
     python scripts/train.py --config configs/train.yaml --learning_rate 5e-5
 """
 
 import argparse
 import yaml
-import pickle
 import torch
 from pathlib import Path
 from datetime import datetime
+import subprocess
 from unsloth import FastVisionModel, is_bfloat16_supported
 from unsloth.trainer import UnslothVisionDataCollator
 from trl import SFTTrainer, SFTConfig
 import wandb
+from data.data_utils import load_and_format_scienceqa
 
 
 parser = argparse.ArgumentParser(description="Train Qwen2-VL on ScienceQA with Unsloth")
@@ -25,8 +26,8 @@ parser = argparse.ArgumentParser(description="Train Qwen2-VL on ScienceQA with U
 parser.add_argument('--config', type=str, help='Path to YAML config file')
 
 # Data args
-parser.add_argument('--train_data', type=str, default='data/processed/scienceqa_train.pkl')
-parser.add_argument('--val_data', type=str, default='data/processed/scienceqa_validation.pkl')
+parser.add_argument('--max_samples', type=int, default=None,
+                    help='Maximum number of samples to use for training/validation (None = all)')
 
 # Model args
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
@@ -61,6 +62,12 @@ parser.add_argument('--wandb_project', type=str, default='stem-vlm-training')
 parser.add_argument('--wandb_entity', type=str, default=None)
 parser.add_argument('--wandb_run_name', type=str, default=None)
 
+# Experiment / Model Registry
+parser.add_argument('--experiment_name', type=str, default='baseline',
+                    help='Name of experiment for grouping models (e.g., "baseline", "lora-rank-sweep", "lr-sweep")')
+parser.add_argument('--experiment_tags', type=str, nargs='*', default=[],
+                    help='Additional custom tags for the model (e.g., "production-candidate", "ablation-study")')
+
 # Output
 parser.add_argument('--output_dir', type=str, default='experiments/runs')
 parser.add_argument('--run_name', type=str, default=None)
@@ -73,8 +80,7 @@ if args.config:
         config = yaml.safe_load(f)
 
     if 'data' in config:
-        args.train_data = config['data'].get('train_data', args.train_data)
-        args.val_data = config['data'].get('val_data', args.val_data)
+        args.max_samples = config['data'].get('max_samples', args.max_samples)
 
     if 'model' in config:
         args.model_name = config['model'].get('name', args.model_name)
@@ -107,6 +113,10 @@ if args.config:
         args.wandb_project = config['wandb'].get('project', args.wandb_project)
         args.wandb_entity = config['wandb'].get('entity', args.wandb_entity)
         args.wandb_run_name = config['wandb'].get('run_name', args.wandb_run_name)
+
+    if 'experiment' in config:
+        args.experiment_name = config['experiment'].get('name', args.experiment_name)
+        args.experiment_tags = config['experiment'].get('tags', args.experiment_tags)
 
     if 'output' in config:
         args.output_dir = config['output'].get('dir', args.output_dir)
@@ -144,20 +154,11 @@ print(f"WandB: {'Enabled' if args.use_wandb else 'Disabled'}")
 print("=" * 70)
 
 
-print("\nLoading training data from pickle...")
-with open(args.train_data, 'rb') as f:
-    train_dataset = pickle.load(f)
-print(f"Loaded {len(train_dataset)} training samples")
+print("\nLoading and formatting training data...")
+train_dataset = load_and_format_scienceqa(split='train', max_samples=args.max_samples)
 
-val_dataset = None
-val_path = Path(args.val_data)
-if val_path.exists():
-    print("\nLoading validation data from pickle...")
-    with open(args.val_data, 'rb') as f:
-        val_dataset = pickle.load(f)
-    print(f"Loaded {len(val_dataset)} validation samples")
-else:
-    print(f"\nValidation data not found at {args.val_data}, skipping validation")
+print("\nLoading and formatting validation data...")
+val_dataset = load_and_format_scienceqa(split='validation', max_samples=args.max_samples)
 
 
 
@@ -264,6 +265,10 @@ print("Training complete!")
 print("=" * 70)
 
 
+def extract_model_name(model_path):
+    """Extract model name from path: Qwen/Qwen2-VL-2B-Instruct -> Qwen2-VL-2B-Instruct"""
+    return model_path.split('/')[-1]
+
 
 final_model_path = output_path / "checkpoint-final"
 print(f"\nSaving final model to: {final_model_path}")
@@ -271,7 +276,85 @@ model.save_pretrained(str(final_model_path))
 tokenizer.save_pretrained(str(final_model_path))
 print("Final model saved")
 
+# Model Registry: Save to WandB artifacts
 if args.use_wandb:
+    
+    model_name = extract_model_name(args.model_name)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    artifact_name = f"{model_name}-{args.experiment_name}-{timestamp}"
+
+    final_metrics = {}
+    if trainer.state.log_history:
+        train_losses = [log['loss'] for log in trainer.state.log_history if 'loss' in log]
+        if train_losses:
+            final_metrics['final_train_loss'] = train_losses[-1]
+
+        eval_losses = [log['eval_loss'] for log in trainer.state.log_history if 'eval_loss' in log]
+        if eval_losses:
+            final_metrics['final_eval_loss'] = eval_losses[-1]
+            final_metrics['best_eval_loss'] = min(eval_losses)
+
+    metadata = {
+        "model_name": model_name,
+
+        # LoRA hyperparameters
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "lora_dropout": args.lora_dropout,
+
+        # Training hyperparameters
+        "learning_rate": args.learning_rate,
+        "batch_size": args.batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "effective_batch_size": args.batch_size * args.gradient_accumulation_steps,
+        "num_epochs": args.num_epochs,
+        "warmup_steps": args.warmup_steps,
+        "weight_decay": args.weight_decay,
+        "max_grad_norm": args.max_grad_norm,
+        "lr_scheduler_type": args.lr_scheduler_type,
+
+        # Dataset info
+        "max_samples": args.max_samples if args.max_samples else "all",
+        "train_samples": len(train_dataset),
+        "val_samples": len(val_dataset) if val_dataset else 0,
+
+        # Performance metrics
+        **final_metrics,
+
+        # Experiment info
+        "experiment_name": args.experiment_name,
+        "run_name": args.run_name,
+        "training_date": datetime.now().isoformat(),
+    }
+
+    # Build tags
+    tags = [model_name, args.experiment_name]
+    tags.extend(args.experiment_tags)
+
+    # Add dataset info tag
+    if args.max_samples:
+        tags.append(f"samples-{args.max_samples}")
+    else:
+        tags.append("full-dataset")
+
+    print(f"\nArtifact name: {artifact_name}")
+    print(f"Tags: {', '.join(tags)}")
+
+    # Create and log artifact
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="model",
+        description=f"Fine-tuned {model_name} on ScienceQA ({args.experiment_name})",
+        metadata=metadata
+    )
+
+    artifact.add_dir(str(final_model_path))
+    wandb.log_artifact(artifact, aliases=tags)
+
+    print("\nModel saved to WandB Model Registry!")
+    print(f"  View at: {wandb.run.url}")
+
     wandb.finish()
 
 print("\n" + "=" * 70)
