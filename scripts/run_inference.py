@@ -85,7 +85,7 @@ parser.add_argument('--temperature', type=float, default=0.0)
 parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference')
 
 # Output
-parser.add_argument('--output_dir', type=str, default='experiments/baseline')
+parser.add_argument('--output_dir', type=str, default='experiments/baseline/predictions')
 
 # WandB args
 parser.add_argument('--use_wandb', action='store_true', help='Enable WandB logging')

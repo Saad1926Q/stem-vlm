@@ -60,9 +60,23 @@ if args.wandb_entity:
 else:
     collection_path = args.wandb_project
 
-# Fetch all model artifacts
-print(f"\nFetching models from {collection_path}...")
-artifacts = api.artifacts(type_name="model", name=collection_path)
+# Fetch model artifacts from runs
+try:
+    runs = api.runs(collection_path)
+    artifacts = []
+    for run in runs:
+        try:
+            for artifact in run.logged_artifacts():
+                if artifact.type == "model":
+                    artifacts.append(artifact)
+        except:
+            continue
+    if not artifacts:
+        print("\nNo model artifacts found.")
+        exit(0)
+except Exception as e:
+    print(f"\nError: {e}")
+    exit(1)
 
 # Collect model data
 models_data = []

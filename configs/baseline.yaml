@@ -22,6 +22,6 @@ generation:
 
 # Output settings
 output:
-  dir: "experiments/baseline"
+  dir: "experiments/baseline/predictions"
   save_predictions: true
   save_metadata: true

@@ -19,6 +19,7 @@ import os
 from datetime import datetime
 from tqdm import tqdm
 import wandb
+from dotenv import load_dotenv
 
 from evaluation.judge import (
     LLMJudge,
@@ -52,6 +53,7 @@ parser.add_argument('--model_artifact', type=str, default=None,
 
 args = parser.parse_args()
 
+load_dotenv()
 
 # Load configuration
 print("=" * 70)
@@ -107,13 +109,12 @@ if args.use_wandb:
 
 
 # Load API key from environment
-api_key_env = config['judge']['api_key_env']
-api_key = os.getenv(api_key_env)
+api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
     raise ValueError(
-        f"API key not found in environment variable: {api_key_env}\n"
-        f"Please set it with: export {api_key_env}='your-key-here'"
+        f"API key not found in environment variable: OPENAI_API_KEY \n"
+        f"Please set it with: export OPENAI_API_KEY=your-key-here"
     )
 
 
