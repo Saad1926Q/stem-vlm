@@ -11,15 +11,15 @@ model:
 
 lora:
   r: 16
-  alpha: 16
+  alpha: 32
   dropout: 0.05
 
 training:
   num_epochs: 3
   batch_size: 2
   gradient_accumulation_steps: 4
-  learning_rate: 2.0e-4
-  warmup_steps: 5
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.1
   weight_decay: 0.01
   max_grad_norm: 1.0
   lr_scheduler_type: linear

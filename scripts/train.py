@@ -7,10 +7,13 @@ Usage:
     python scripts/train.py --config configs/train.yaml --learning_rate 5e-5
 """
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import argparse
 import yaml
 import torch
-from pathlib import Path
 from datetime import datetime
 import subprocess
 from unsloth import FastVisionModel, is_bfloat16_supported
@@ -44,7 +47,7 @@ parser.add_argument('--num_epochs', type=int, default=3)
 parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--gradient_accumulation_steps', type=int, default=4)
 parser.add_argument('--learning_rate', type=float, default=2e-4)
-parser.add_argument('--warmup_steps', type=int, default=5)
+parser.add_argument('--warmup_ratio', type=float, default=0.1)
 parser.add_argument('--weight_decay', type=float, default=0.01)
 parser.add_argument('--max_grad_norm', type=float, default=1.0)
 parser.add_argument('--lr_scheduler_type', type=str, default='linear')
@@ -97,7 +100,7 @@ if args.config:
         args.batch_size = config['training'].get('batch_size', args.batch_size)
         args.gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', args.gradient_accumulation_steps)
         args.learning_rate = config['training'].get('learning_rate', args.learning_rate)
-        args.warmup_steps = config['training'].get('warmup_steps', args.warmup_steps)
+        args.warmup_ratio = config['training'].get('warmup_ratio', args.warmup_ratio)
         args.weight_decay = config['training'].get('weight_decay', args.weight_decay)
         args.max_grad_norm = config['training'].get('max_grad_norm', args.max_grad_norm)
         args.lr_scheduler_type = config['training'].get('lr_scheduler_type', args.lr_scheduler_type)
@@ -199,7 +202,7 @@ training_args = SFTConfig(
     per_device_train_batch_size=args.batch_size,
     gradient_accumulation_steps=args.gradient_accumulation_steps,
     learning_rate=args.learning_rate,
-    warmup_steps=args.warmup_steps,
+    warmup_ratio=args.warmup_ratio,
     weight_decay=args.weight_decay,
     max_grad_norm=args.max_grad_norm,
     lr_scheduler_type=args.lr_scheduler_type,
@@ -309,7 +312,7 @@ if args.use_wandb:
         "gradient_accumulation_steps": args.gradient_accumulation_steps,
         "effective_batch_size": args.batch_size * args.gradient_accumulation_steps,
         "num_epochs": args.num_epochs,
-        "warmup_steps": args.warmup_steps,
+        "warmup_ratio": args.warmup_ratio,
         "weight_decay": args.weight_decay,
         "max_grad_norm": args.max_grad_norm,
         "lr_scheduler_type": args.lr_scheduler_type,

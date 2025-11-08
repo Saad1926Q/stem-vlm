@@ -173,7 +173,7 @@ def parse_judge_response(response: str) -> Dict[str, any]:
         # Look for "Verdict: CORRECT" or "Verdict: INCORRECT"
         if line.strip().startswith('Verdict:'):
             verdict_text = line.split(':', 1)[1].strip().upper()
-            result['correct'] = ('CORRECT' in verdict_text)
+            result['correct'] = ('INCORRECT' not in verdict_text)
 
         # Look for "Reasoning: ..."
         elif line.strip().startswith('Reasoning:'):

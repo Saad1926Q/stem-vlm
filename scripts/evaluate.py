@@ -8,11 +8,14 @@ Usage:
         --config configs/judge.yaml
 """
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import argparse
 import yaml
 import json
 import os
-from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 import wandb
