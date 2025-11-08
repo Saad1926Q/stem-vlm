@@ -61,7 +61,7 @@ parser.add_argument('--resume_from_checkpoint', type=str, default=None)
 
 # WandB
 parser.add_argument('--use_wandb', action='store_true', default=True)
-parser.add_argument('--wandb_project', type=str, default='stem-vlm-training')
+parser.add_argument('--wandb_project', type=str, default='stem-vlm')
 parser.add_argument('--wandb_entity', type=str, default=None)
 parser.add_argument('--wandb_run_name', type=str, default=None)
 

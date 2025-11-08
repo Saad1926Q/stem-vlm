@@ -24,7 +24,7 @@ from tabulate import tabulate
 
 parser = argparse.ArgumentParser(description="Compare models from WandB Model Registry")
 
-parser.add_argument('--wandb_project', type=str, default='stem-vlm-training',
+parser.add_argument('--wandb_project', type=str, default='stem-vlm',
                     help='WandB project name')
 parser.add_argument('--wandb_entity', type=str, default=None,
                     help='WandB entity/username')

@@ -32,7 +32,7 @@ checkpointing:
 
 wandb:
   enabled: true
-  project: stem-vlm-training
+  project: stem-vlm
   entity: null
   run_name: null
 
