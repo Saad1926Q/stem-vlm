@@ -1,5 +1,4 @@
 # Baseline Evaluation Configuration
-# This file contains all settings for running baseline evaluation
 
 # Model settings
 model:
@@ -16,9 +15,9 @@ dataset:
 # Generation settings (how the model generates answers)
 generation:
   max_new_tokens: 128
-  temperature: 0.0  # 0 = deterministic (same answer every time)
-  do_sample: false  # false = greedy decoding (most likely tokens)
-  batch_size: 4  # Number of samples to process in parallel (higher = faster but more memory)
+  temperature: 0.0  
+  do_sample: false  
+  batch_size: 4  
 
 # Output settings
 output:

@@ -3,22 +3,20 @@
 
 # Judge model configuration
 judge:
-  provider: "openai"                    # API provider (currently only OpenAI)
-  model: "gpt-4o-mini"                  # Model name (gpt-4o-mini is cheap and good)
+  provider: "openai"                    
+  model: "gpt-4o-mini"                  
 
   # Generation settings
-  temperature: 0.0                      # 0.0 = deterministic (same input always gives same output)
-  max_tokens: 200                       # Maximum response length (verdict + reasoning)
+  temperature: 0.0                      
+  max_tokens: 200                       
 
   # Rate limiting (prevents hitting API limits)
-  requests_per_minute: 100              # Max 100 requests per minute (safe for most tiers)
-  max_retries: 3                        # Retry up to 3 times on failure
-  retry_delay_seconds: 2                # Initial wait time between retries (doubles each time)
+  requests_per_minute: 100              
+  max_retries: 3                        
+  retry_delay_seconds: 2                
 
 # Prompts for the judge
-# These tell GPT-4o-mini how to evaluate predictions
 prompts:
-  # System prompt: Sets the judge's role and behavior
   system: |
     You are an expert evaluator for mathematical and scientific questions.
     Your job is to judge whether a model's answer is correct compared to the ground truth.
@@ -29,8 +27,7 @@ prompts:
     - Focus on whether the core answer is semantically correct
     - Be lenient with wording but strict with factual accuracy
 
-  # User prompt template: Format for each evaluation
-  # Placeholders {question}, {ground_truth}, {prediction} will be filled in
+  
   user_template: |
     Question: {question}
 
@@ -52,5 +49,5 @@ prompts:
 
 # Output configuration
 output:
-  save_dir: "experiments/baseline/evaluations"    # Where to save evaluation results
-  save_raw_responses: true              # Keep full judge responses for debugging
+  save_dir: "experiments/baseline/evaluations"    
+  save_raw_responses: true              
