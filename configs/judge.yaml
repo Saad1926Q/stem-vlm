@@ -1,5 +1,4 @@
 # LLM-as-Judge Configuration
-# This file controls all settings for automated evaluation using GPT-4o-mini
 
 # Judge model configuration
 judge:
@@ -10,13 +9,14 @@ judge:
   temperature: 0.0                      
   max_tokens: 200                       
 
-  # Rate limiting (prevents hitting API limits)
+  # Rate limiting
   requests_per_minute: 100              
   max_retries: 3                        
   retry_delay_seconds: 2                
 
 # Prompts for the judge
 prompts:
+  # Standard evaluation (for non-CoT predictions)
   system: |
     You are an expert evaluator for mathematical and scientific questions.
     Your job is to judge whether a model's answer is correct compared to the ground truth.
@@ -27,7 +27,7 @@ prompts:
     - Focus on whether the core answer is semantically correct
     - Be lenient with wording but strict with factual accuracy
 
-  
+
   user_template: |
     Question: {question}
 
@@ -46,6 +46,42 @@ prompts:
     Respond in EXACTLY this format (no additional text):
     Verdict: [CORRECT or INCORRECT]
     Reasoning: [One concise sentence explaining your decision]
+
+  # Chain-of-Thought evaluation (evaluates both answer AND reasoning)
+  cot_system: |
+    You are an expert evaluator for mathematical and scientific questions.
+    Your job is to evaluate BOTH the final answer AND the reasoning process.
+
+    Key principles for answer evaluation:
+    - Consider mathematical equivalence (e.g., 0.5 = 1/2 = 50%)
+    - Ignore minor formatting differences
+    - Focus on whether the final selected option/answer matches the ground truth
+
+    Key principles for reasoning evaluation:
+    - Check if the logical flow is sound
+    - Verify mathematical/scientific principles are applied correctly
+    - Identify calculation errors, logical fallacies, or incorrect assumptions
+    - Reasoning can be sound even if a minor slip led to wrong final answer
+
+  cot_user_template: |
+    Question: {question}
+
+    Ground Truth Answer: {ground_truth}
+
+    Model's Full Response: {prediction}
+
+    Task: Evaluate BOTH the final answer and the reasoning quality.
+
+    Instructions:
+    1. Extract the final answer/option from the model's response
+    2. Check if it matches the ground truth
+    3. Analyze the reasoning steps for logical soundness
+    4. Provide separate verdicts for answer correctness and reasoning quality
+
+    Respond in EXACTLY this format (no additional text):
+    Answer: [CORRECT or INCORRECT]
+    Reasoning: [CORRECT or INCORRECT]
+    Explanation: [One concise sentence explaining both verdicts]
 
 # Output configuration
 output:

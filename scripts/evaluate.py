@@ -2,7 +2,7 @@
 Evaluate model predictions using LLM-as-Judge (GPT-4o-mini).
 
 Usage:
-    export OPENAI_API_KEY="sk-..."
+    export OPENAI_API_KEY="ab-..."
     python scripts/evaluate.py \
         --predictions experiments/baseline/mathverse_predictions_20250104.json \
         --config configs/judge.yaml
@@ -27,6 +27,7 @@ from evaluation.judge import (
     parse_judge_response,
     calculate_accuracy
 )
+from datasets import load_dataset
 
 
 parser = argparse.ArgumentParser(description="Evaluate predictions with LLM judge")
@@ -145,10 +146,30 @@ print(f"✓ Base model: {metadata.get('model', 'unknown')}")
 print("=" * 70)
 
 
-# Evaluate each prediction
+# Detect if this is a CoT evaluation
+uses_cot = metadata.get('uses_cot', False)
+
+if uses_cot:
+    system_prompt = config['prompts']['cot_system']
+    user_template = config['prompts']['cot_user_template']
+
+    dataset_name = metadata.get('dataset')
+
+    if dataset_name == 'mathverse':
+        dataset = load_dataset("AI4Math/MathVerse", "testmini")['testmini']
+    elif dataset_name == 'scienceqa':
+        dataset = load_dataset("derek-thomas/ScienceQA", split="test")
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    # Create a mapping from sample_id to image for fast lookup
+    image_map = {i: dataset[i]['image'] for i in range(len(dataset))}
+else:
+    system_prompt = config['prompts']['system']
+    user_template = config['prompts']['user_template']
+    image_map = None
+
 results = []
-system_prompt = config['prompts']['system']
-user_template = config['prompts']['user_template']
 
 print("Starting evaluation...")
 
@@ -161,36 +182,59 @@ for i, pred in enumerate(tqdm(predictions, desc="Judging", unit="sample")):
         prediction=pred['prediction']
     )
 
+    # Get image if using CoT mode
+    image = None
+    if uses_cot and image_map is not None:
+        sample_id = pred['sample_id']
+        image = image_map.get(sample_id)
+
     # Get judgment from GPT-4o-mini
     try:
-        response = judge.judge_single(system_prompt, user_prompt)
+        response = judge.judge_single(system_prompt, user_prompt, image=image)
 
         # Parse the response
-        judgment = parse_judge_response(response)
+        judgment = parse_judge_response(response, is_cot=uses_cot)
 
         # Store result
-        results.append({
+        result = {
             'sample_id': pred['sample_id'],
             'question': pred['question'],
             'ground_truth': pred['ground_truth'],
             'prediction': pred['prediction'],
-            'correct': judgment['correct'],
-            'reasoning': judgment['reasoning'],
             'raw_judge_response': judgment['raw_response'] if config['output']['save_raw_responses'] else None
-        })
+        }
+
+        if uses_cot:
+            result['answer_correct'] = judgment['answer_correct']
+            result['reasoning_correct'] = judgment['reasoning_correct']
+            result['explanation'] = judgment['explanation']
+        else:
+            result['correct'] = judgment['correct']
+            result['reasoning'] = judgment['reasoning']
+
+        results.append(result)
 
     except Exception as e:
         # If judgment fails, record the error
         print(f"\n[ERROR] Failed to judge sample {pred['sample_id']}: {e}")
-        results.append({
+
+        result = {
             'sample_id': pred['sample_id'],
             'question': pred['question'],
             'ground_truth': pred['ground_truth'],
             'prediction': pred['prediction'],
-            'correct': None,
-            'reasoning': f"Error: {str(e)}",
             'raw_judge_response': None
-        })
+        }
+
+        if uses_cot:
+            result['answer_correct'] = None
+            result['reasoning_correct'] = None
+            result['explanation'] = f"Error: {str(e)}"
+        else:
+            result['correct'] = None
+            result['reasoning'] = f"Error: {str(e)}"
+
+        results.append(result)
 
     # Rate limiting: wait before next request (except for last sample)
     if i < len(predictions) - 1:
@@ -198,15 +242,28 @@ for i, pred in enumerate(tqdm(predictions, desc="Judging", unit="sample")):
 
 
 # Calculate accuracy
-metrics = calculate_accuracy(results)
+metrics = calculate_accuracy(results, is_cot=uses_cot)
 
 print("\n" + "=" * 70)
 print("Results")
 print("=" * 70)
 print(f"Total samples: {metrics['total']}")
-print(f"Correct: {metrics['correct']}")
-print(f"Incorrect: {metrics['incorrect']}")
-print(f"Accuracy: {metrics['accuracy']:.2%}")
+
+if uses_cot:
+    # CoT mode
+    print(f"\nAnswer Accuracy: {metrics['answer_accuracy']:.2%}")
+    print(f"Reasoning Accuracy: {metrics['reasoning_accuracy']:.2%}")
+    print(f"\nBreakdown:")
+    print(f"  Both Correct: {metrics['both_correct']} ({metrics['both_correct']/metrics['total']*100:.1f}%)")
+    print(f"  Answer Correct, Reasoning Wrong: {metrics['answer_correct_reasoning_wrong']}")
+    print(f"  Answer Wrong, Reasoning Correct: {metrics['answer_wrong_reasoning_correct']}")
+    print(f"  Both Wrong: {metrics['both_wrong']}")
+else:
+    # Standard mode: show simple accuracy
+    print(f"Correct: {metrics['correct']}")
+    print(f"Incorrect: {metrics['incorrect']}")
+    print(f"Accuracy: {metrics['accuracy']:.2%}")
+
 print("=" * 70)
 
 
@@ -218,20 +275,37 @@ timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 dataset_name = metadata.get('dataset', 'unknown')
 results_file = output_dir / f"{dataset_name}_judge_results_{timestamp}.json"
 
+results_metadata = {
+    'judge_model': config['judge']['model'],
+    'judge_provider': config['judge']['provider'],
+    'judge_temperature': config['judge']['temperature'],
+    'base_model': metadata.get('model'),
+    'dataset': metadata.get('dataset'),
+    'timestamp': timestamp,
+    'uses_cot': uses_cot,
+    'total_samples': metrics['total']
+}
+
+# Add appropriate metrics based on evaluation mode
+if uses_cot:
+    results_metadata.update({
+        'answer_accuracy': metrics['answer_accuracy'],
+        'reasoning_accuracy': metrics['reasoning_accuracy'],
+        'both_correct': metrics['both_correct'],
+        'answer_correct_reasoning_wrong': metrics['answer_correct_reasoning_wrong'],
+        'answer_wrong_reasoning_correct': metrics['answer_wrong_reasoning_correct'],
+        'both_wrong': metrics['both_wrong']
+    })
+else:
+    results_metadata.update({
+        'accuracy': metrics['accuracy'],
+        'correct_samples': metrics['correct'],
+        'incorrect_samples': metrics['incorrect']
+    })
+
 with open(results_file, 'w') as f:
     json.dump({
-        'metadata': {
-            'judge_model': config['judge']['model'],
-            'judge_provider': config['judge']['provider'],
-            'judge_temperature': config['judge']['temperature'],
-            'base_model': metadata.get('model'),
-            'dataset': metadata.get('dataset'),
-            'timestamp': timestamp,
-            'accuracy': metrics['accuracy'],
-            'total_samples': metrics['total'],
-            'correct_samples': metrics['correct'],
-            'incorrect_samples': metrics['incorrect']
-        },
+        'metadata': results_metadata,
         'results': results
     }, f, indent=2)
 
@@ -239,52 +313,85 @@ print(f"\n✓ Results saved to: {results_file}")
 
 # Log to WandB if enabled
 if wandb_run:
-    # Log summary metrics
-    wandb.log({
-        "accuracy": metrics['accuracy'],
-        "total_samples": metrics['total'],
-        "correct_samples": metrics['correct'],
-        "incorrect_samples": metrics['incorrect']
-    })
+    # Log summary metrics 
+    if uses_cot:
+        wandb.log({
+            "answer_accuracy": metrics['answer_accuracy'],
+            "reasoning_accuracy": metrics['reasoning_accuracy'],
+            "total_samples": metrics['total'],
+            "both_correct": metrics['both_correct'],
+            "answer_correct_reasoning_wrong": metrics['answer_correct_reasoning_wrong'],
+            "answer_wrong_reasoning_correct": metrics['answer_wrong_reasoning_correct'],
+            "both_wrong": metrics['both_wrong']
+        })
+    else:
+        wandb.log({
+            "accuracy": metrics['accuracy'],
+            "total_samples": metrics['total'],
+            "correct_samples": metrics['correct'],
+            "incorrect_samples": metrics['incorrect']
+        })
 
-    # Create detailed results table
     sample_size = min(20, len(results))
-    table = wandb.Table(columns=["sample_id", "question", "prediction", "ground_truth", "correct", "reasoning"])
-    for result in results[:sample_size]:
-        table.add_data(
-            result["sample_id"],
-            result["question"][:100] + "..." if len(result["question"]) > 100 else result["question"],
-            result["prediction"][:100] + "..." if len(result["prediction"]) > 100 else result["prediction"],
-            str(result["ground_truth"]),
-            result["correct"],
-            result["reasoning"][:200] + "..." if result["reasoning"] and len(result["reasoning"]) > 200 else result["reasoning"]
-        )
+
+    if uses_cot:
+        table = wandb.Table(columns=["sample_id", "question", "prediction", "ground_truth", "answer_correct", "reasoning_correct", "explanation"])
+        for result in results[:sample_size]:
+            table.add_data(
+                result["sample_id"],
+                result["question"][:100] + "..." if len(result["question"]) > 100 else result["question"],
+                result["prediction"][:100] + "..." if len(result["prediction"]) > 100 else result["prediction"],
+                str(result["ground_truth"]),
+                result["answer_correct"],
+                result["reasoning_correct"],
+                result["explanation"][:200] + "..." if result["explanation"] and len(result["explanation"]) > 200 else result["explanation"]
+            )
+    else:
+        table = wandb.Table(columns=["sample_id", "question", "prediction", "ground_truth", "correct", "reasoning"])
+        for result in results[:sample_size]:
+            table.add_data(
+                result["sample_id"],
+                result["question"][:100] + "..." if len(result["question"]) > 100 else result["question"],
+                result["prediction"][:100] + "..." if len(result["prediction"]) > 100 else result["prediction"],
+                str(result["ground_truth"]),
+                result["correct"],
+                result["reasoning"][:200] + "..." if result["reasoning"] and len(result["reasoning"]) > 200 else result["reasoning"]
+            )
+
     wandb.log({"evaluation_results_sample": table})
 
-    # Save results file as WandB artifact
+    # Save results file as WandB artifact 
+    artifact_metadata = {
+        "judge_model": config['judge']['model'],
+        "total_samples": metrics['total'],
+        "uses_cot": uses_cot
+    }
+
+    if uses_cot:
+        artifact_metadata.update({
+            "answer_accuracy": metrics['answer_accuracy'],
+            "reasoning_accuracy": metrics['reasoning_accuracy']
+        })
+    else:
+        artifact_metadata["accuracy"] = metrics['accuracy']
+
     results_artifact = wandb.Artifact(
         name=f"{dataset_name}-evaluation",
         type="evaluation",
         description=f"Evaluation results for {dataset_name}",
-        metadata={
-            "accuracy": metrics['accuracy'],
-            "judge_model": config['judge']['model'],
-            "total_samples": metrics['total'],
-        }
+        metadata=artifact_metadata
     )
     results_artifact.add_file(str(results_file))
     wandb_run.log_artifact(results_artifact)
 
-    # Try to link to inference run if wandb_run_id is in metadata
     if 'wandb_run_id' in metadata and metadata['wandb_run_id']:
         wandb_run.config.update({"inference_run_id": metadata['wandb_run_id']})
 
     # Update model artifact with accuracy if specified
     if args.model_artifact:
-        print(f"\nUpdating model artifact with accuracy: {args.model_artifact}")
+        print(f"\nUpdating model artifact with metrics: {args.model_artifact}")
         api = wandb.Api()
 
-        # Build full artifact reference
         if args.wandb_entity:
             artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.model_artifact}"
         else:
@@ -294,16 +401,22 @@ if wandb_run:
             # Fetch the model artifact
             model_artifact = api.artifact(artifact_ref, type="model")
 
-            # Update metadata with dataset-specific accuracy
+            # Update metadata with dataset-specific metrics
             dataset_name = metadata.get('dataset', 'unknown')
-            model_artifact.metadata[f'accuracy_{dataset_name}'] = metrics['accuracy']
             model_artifact.metadata[f'total_samples_{dataset_name}'] = metrics['total']
-            model_artifact.metadata[f'correct_samples_{dataset_name}'] = metrics['correct']
+
+            if uses_cot:
+                model_artifact.metadata[f'answer_accuracy_{dataset_name}'] = metrics['answer_accuracy']
+                model_artifact.metadata[f'reasoning_accuracy_{dataset_name}'] = metrics['reasoning_accuracy']
+                print(f"✓ Model artifact updated with {dataset_name} answer accuracy: {metrics['answer_accuracy']:.2%}, reasoning accuracy: {metrics['reasoning_accuracy']:.2%}")
+            else:
+                model_artifact.metadata[f'accuracy_{dataset_name}'] = metrics['accuracy']
+                model_artifact.metadata[f'correct_samples_{dataset_name}'] = metrics['correct']
+                print(f"✓ Model artifact updated with {dataset_name} accuracy: {metrics['accuracy']:.2%}")
 
             # Save the updated metadata
             model_artifact.save()
 
-            print(f"✓ Model artifact updated with {dataset_name} accuracy: {metrics['accuracy']:.2%}")
         except Exception as e:
             print(f"Failed to update model artifact: {e}")
 

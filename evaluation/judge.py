@@ -7,9 +7,28 @@ Provides:
 """
 
 import time
-from typing import Dict, List
+import base64
+from io import BytesIO
+from typing import Dict, List, Optional
 from openai import OpenAI
 from openai import RateLimitError, APIError
+from PIL import Image
+
+
+def image_to_base64(pil_image: Image.Image) -> str:
+    """
+    Convert a PIL Image to base64 string for OpenAI API.
+
+    Args:
+        pil_image: PIL Image object
+
+    Returns:
+        str: Base64 encoded image string
+    """
+    buffered = BytesIO()
+    pil_image.save(buffered, format="PNG")
+    img_bytes = buffered.getvalue()
+    return base64.b64encode(img_bytes).decode('utf-8')
 
 
 class LLMJudge:
@@ -54,15 +73,17 @@ class LLMJudge:
         # Calculate delay between requests to respect rate limits
         self.request_delay = 60.0 / requests_per_minute
 
-    def judge_single(self, system_prompt: str, user_prompt: str) -> str:
+    def judge_single(self, system_prompt: str, user_prompt: str, image: Optional[Image.Image] = None) -> str:
         """
         Send a single judgment request to GPT-4o-mini.
 
         Includes retry logic with exponential backoff for handling transient errors.
+        Supports vision - if an image is provided, it will be sent along with the text.
 
         Args:
             system_prompt: System message (instructions for the judge)
             user_prompt: User message (the actual evaluation task)
+            image: Optional PIL Image to send for visual evaluation
 
         Returns:
             str: The judge's response text
@@ -72,12 +93,32 @@ class LLMJudge:
         """
         for attempt in range(self.max_retries):
             try:
+                # Build user message content
+                if image is not None:
+                    # Vision mode: send image + text
+                    base64_image = image_to_base64(image)
+                    user_content = [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": user_prompt
+                        }
+                    ]
+                else:
+                    # Text-only mode: just send text
+                    user_content = user_prompt
+
                 # Make the API call
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "user", "content": user_content}
                     ],
                     temperature=self.temperature,
                     max_tokens=self.max_tokens
@@ -143,67 +184,128 @@ def format_judge_prompt(template: str, question: str, ground_truth: str, predict
     )
 
 
-def parse_judge_response(response: str) -> Dict[str, any]:
+def parse_judge_response(response: str, is_cot: bool = False) -> Dict[str, any]:
     """
     Parse the judge's response into structured format.
 
-    Expected response format:
+    Expected response formats:
+
+    Standard (non-CoT):
         Verdict: CORRECT
         Reasoning: The answer is mathematically equivalent.
 
+    CoT format:
+        Answer: CORRECT
+        Reasoning: INCORRECT
+        Explanation: The final answer is correct but the calculation had errors.
+
     Args:
         response: Raw text response from the judge
+        is_cot: Whether this is evaluating a CoT prediction (uses different format)
 
     Returns:
-        dict: Contains:
+        dict: For standard evaluation:
             - correct (bool): True if verdict is CORRECT, False if INCORRECT
             - reasoning (str): Explanation from the judge
             - raw_response (str): Original response text
+
+        For CoT evaluation:
+            - answer_correct (bool): Whether final answer matches ground truth
+            - reasoning_correct (bool): Whether reasoning is sound
+            - explanation (str): Explanation from the judge
+            - raw_response (str): Original response text
     """
     result = {
-        'correct': None,
-        'reasoning': None,
         'raw_response': response
     }
 
     # Split response into lines
     lines = response.strip().split('\n')
 
-    for line in lines:
-        # Look for "Verdict: CORRECT" or "Verdict: INCORRECT"
-        if line.strip().startswith('Verdict:'):
-            verdict_text = line.split(':', 1)[1].strip().upper()
-            result['correct'] = ('INCORRECT' not in verdict_text)
+    if is_cot:
+        # Parse CoT format: Answer, Reasoning, Explanation
+        result['answer_correct'] = None
+        result['reasoning_correct'] = None
+        result['explanation'] = None
 
-        # Look for "Reasoning: ..."
-        elif line.strip().startswith('Reasoning:'):
-            result['reasoning'] = line.split(':', 1)[1].strip()
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Answer:'):
+                verdict_text = line.split(':', 1)[1].strip().upper()
+                result['answer_correct'] = ('INCORRECT' not in verdict_text)
+            elif line.startswith('Reasoning:'):
+                verdict_text = line.split(':', 1)[1].strip().upper()
+                result['reasoning_correct'] = ('INCORRECT' not in verdict_text)
+            elif line.startswith('Explanation:'):
+                result['explanation'] = line.split(':', 1)[1].strip()
+    else:
+        # Parse standard format: Verdict, Reasoning
+        result['correct'] = None
+        result['reasoning'] = None
+
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Verdict:'):
+                verdict_text = line.split(':', 1)[1].strip().upper()
+                result['correct'] = ('INCORRECT' not in verdict_text)
+            elif line.startswith('Reasoning:'):
+                result['reasoning'] = line.split(':', 1)[1].strip()
 
     return result
 
 
-def calculate_accuracy(results: List[Dict]) -> Dict[str, float]:
+def calculate_accuracy(results: List[Dict], is_cot: bool = False) -> Dict[str, float]:
     """
     Calculate accuracy metrics from judge results.
 
     Args:
-        results: List of judgment dicts, each with a 'correct' field
+        results: List of judgment dicts
+        is_cot: Whether these are CoT evaluations (with separate answer/reasoning verdicts)
 
     Returns:
-        dict: Contains:
+        dict: For standard evaluation:
             - accuracy (float): Percentage correct (0.0 to 1.0)
             - total (int): Total number of samples
             - correct (int): Number of correct predictions
             - incorrect (int): Number of incorrect predictions
+
+        For CoT evaluation (additional metrics):
+            - answer_accuracy (float): Percentage with correct final answer
+            - reasoning_accuracy (float): Percentage with correct reasoning
+            - both_correct (int): Both answer and reasoning correct
+            - answer_correct_reasoning_wrong (int): Right answer, wrong reasoning
+            - answer_wrong_reasoning_correct (int): Wrong answer, right reasoning
+            - both_wrong (int): Both answer and reasoning wrong
     """
     total = len(results)
-    correct = sum(1 for r in results if r.get('correct') == True)
-    incorrect = total - correct
-    accuracy = correct / total if total > 0 else 0.0
 
-    return {
-        'accuracy': accuracy,
-        'total': total,
-        'correct': correct,
-        'incorrect': incorrect
-    }
+    if is_cot:
+        # CoT metrics
+        answer_correct_count = sum(1 for r in results if r.get('answer_correct') == True)
+        reasoning_correct_count = sum(1 for r in results if r.get('reasoning_correct') == True)
+        both_correct = sum(1 for r in results if r.get('answer_correct') == True and r.get('reasoning_correct') == True)
+        answer_correct_reasoning_wrong = sum(1 for r in results if r.get('answer_correct') == True and r.get('reasoning_correct') == False)
+        answer_wrong_reasoning_correct = sum(1 for r in results if r.get('answer_correct') == False and r.get('reasoning_correct') == True)
+        both_wrong = sum(1 for r in results if r.get('answer_correct') == False and r.get('reasoning_correct') == False)
+
+        return {
+            'total': total,
+            'answer_accuracy': answer_correct_count / total if total > 0 else 0.0,
+            'reasoning_accuracy': reasoning_correct_count / total if total > 0 else 0.0,
+            'both_correct': both_correct,
+            'answer_correct_reasoning_wrong': answer_correct_reasoning_wrong,
+            'answer_wrong_reasoning_correct': answer_wrong_reasoning_correct,
+            'both_wrong': both_wrong,
+        }
+    else:
+        # Standard metrics
+        correct = sum(1 for r in results if r.get('correct') == True)
+        incorrect = total - correct
+        accuracy = correct / total if total > 0 else 0.0
+
+        return {
+            'accuracy': accuracy,
+            'total': total,
+            'correct': correct,
+            'incorrect': incorrect
+        }

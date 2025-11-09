@@ -27,13 +27,13 @@ def process_batch_element(args):
     """
     Worker function that preprocesses a single sample in parallel.
 
-    Takes: (image, question, index, ground_truth, max_dimension)
+    Takes: (image, question, index, ground_truth, max_dimension, cot_instruction)
     Returns: dict with preprocessed data, or None if image is missing
 
     Does image resizing + message dict creation.
     Note: processor.apply_chat_template() stays in main process (can't pickle processor).
     """
-    image, question, idx, ground_truth, max_dimension = args
+    image, question, idx, ground_truth, max_dimension, cot_instruction = args
 
     # Skip samples without images
     if image is None:
@@ -44,13 +44,17 @@ def process_batch_element(args):
         image = image.copy()
         image.thumbnail((max_dimension, max_dimension))
 
-    # Create message dictionary
+    if cot_instruction:
+        question_with_instruction = f"{question}\n\n{cot_instruction}"
+    else:
+        question_with_instruction = question
+
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": question}
+                {"type": "text", "text": question_with_instruction}
             ]
         }
     ]
@@ -83,6 +87,8 @@ parser.add_argument('--num_samples', type=int, default=None, help='Number of sam
 parser.add_argument('--max_new_tokens', type=int, default=128)
 parser.add_argument('--temperature', type=float, default=0.0)
 parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference')
+parser.add_argument('--cot_instruction', type=str, default=None,
+                    help='Chain-of-thought instruction to append to questions (e.g., "Think step by step and explain your reasoning before selecting your final answer.")')
 
 # Output
 parser.add_argument('--output_dir', type=str, default='experiments/baseline/predictions')
@@ -114,6 +120,7 @@ if args.config:
         args.max_new_tokens = config['generation'].get('max_new_tokens', args.max_new_tokens)
         args.temperature = config['generation'].get('temperature', args.temperature)
         args.batch_size = config['generation'].get('batch_size', args.batch_size)
+        args.cot_instruction = config['generation'].get('cot_instruction', args.cot_instruction)
     if 'output' in config:
         args.output_dir = config['output'].get('dir', args.output_dir)
     if 'wandb' in config:
@@ -263,7 +270,8 @@ for batch in tqdm(dataset.iter(batch_size=args.batch_size), desc="Evaluating", t
             batch['question'][i],
             sample_idx + i,
             batch.get('answer', [None] * len(batch['image']))[i],
-            MAX_DIMENSION
+            MAX_DIMENSION,
+            args.cot_instruction
         )
         for i in range(len(batch['image']))
     ]
@@ -373,6 +381,8 @@ predictions_data = {
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
         "batch_size": args.batch_size,
+        "cot_instruction": args.cot_instruction,
+        "uses_cot": args.cot_instruction is not None,
         "inference_time_seconds": inference_time,
         "wandb_run_id": wandb_run.id if wandb_run else None,
     },
