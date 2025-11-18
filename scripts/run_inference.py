@@ -1,10 +1,40 @@
 """
 Run inference and evaluation on vision-language benchmarks.
 
-Usage:
-    python scripts/run_inference.py --config configs/baseline.yaml
-    python scripts/run_inference.py --dataset mathverse --num_samples 10
-    python scripts/run_inference.py --model_name Qwen/Qwen2-VL-2B-Instruct --adapter_path experiments/runs/my-run/checkpoint-final
+Usage Examples:
+
+1. Baseline inference (no adapter):
+    python scripts/run_inference.py --dataset mathverse --use_wandb
+
+2. Using WandB artifact (just artifact name):
+    python scripts/run_inference.py --adapter_artifact my-model:v0 --dataset scienceqa --use_wandb
+
+3. Using WandB artifact (with project):
+    python scripts/run_inference.py --adapter_artifact stem-vlm/my-model:latest --dataset mathverse
+
+4. Using WandB artifact (full path with entity):
+    python scripts/run_inference.py --adapter_artifact username/stem-vlm/my-model:v0 --dataset scienceqa
+
+5. Limited samples for testing:
+    python scripts/run_inference.py --adapter_artifact my-model:v0 --dataset mathverse --num_samples 10
+
+6. With Chain-of-Thought reasoning:
+    python scripts/run_inference.py --adapter_artifact my-model:v0 --dataset scienceqa \
+        --cot_instruction "Think step by step and explain your reasoning before selecting your final answer."
+
+7. Using config file:
+    python scripts/run_inference.py --config configs/inference.yaml
+
+8. Config file with command-line overrides:
+    python scripts/run_inference.py --config configs/inference.yaml --num_samples 100 --batch_size 8
+
+9. Custom WandB settings:
+    python scripts/run_inference.py --adapter_artifact my-model:v0 --dataset mathverse \
+        --use_wandb --wandb_entity my-team --wandb_run_name custom-inference-run
+
+10. Different model and batch size:
+    python scripts/run_inference.py --model_name Qwen/Qwen2-VL-7B-Instruct \
+        --adapter_artifact my-7b-model:v0 --dataset scienceqa --batch_size 2
 """
 
 import argparse
@@ -75,8 +105,7 @@ parser.add_argument('--config', type=str, help='Path to YAML config file')
 
 # Model args
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
-parser.add_argument('--adapter_path', type=str, default=None, help='Path to LoRA adapter weights (optional)')
-parser.add_argument('--model_artifact', type=str, default=None, help='WandB artifact name (e.g., "Qwen2-VL-2B-Instruct-baseline-20250107_123456:v0" or with alias "Qwen2-VL-2B-Instruct-baseline-20250107_123456:baseline")')
+parser.add_argument('--adapter_artifact', type=str, default=None, help='WandB artifact name for LoRA adapter (e.g., "my-model:v0" or "entity/project/my-model:v0")')
 parser.add_argument('--dtype', type=str, default='bfloat16', choices=['bfloat16', 'float16', 'float32'])
 
 # Dataset args
@@ -110,8 +139,7 @@ if args.config:
     # Override with config values (command-line args take priority)
     if 'model' in config:
         args.model_name = config['model'].get('name', args.model_name)
-        args.adapter_path = config['model'].get('adapter_path', args.adapter_path)
-        args.model_artifact = config['model'].get('artifact', args.model_artifact)
+        args.adapter_artifact = config['model'].get('adapter_artifact', args.adapter_artifact)
         args.dtype = config['model'].get('dtype', args.dtype)
     if 'dataset' in config:
         args.dataset = config['dataset'].get('name', args.dataset)
@@ -134,10 +162,8 @@ print("=" * 70)
 print("STEM-VLM Inference")
 print("=" * 70)
 print(f"Model: {args.model_name}")
-if args.model_artifact:
-    print(f"WandB Artifact: {args.model_artifact}")
-elif args.adapter_path:
-    print(f"Adapter: {args.adapter_path}")
+if args.adapter_artifact:
+    print(f"Adapter Artifact: {args.adapter_artifact}")
 print(f"Dataset: {args.dataset}")
 print(f"Num samples: {args.num_samples if args.num_samples else 'all'}")
 print(f"Batch size: {args.batch_size}")
@@ -145,19 +171,36 @@ print(f"Output: {args.output_dir}")
 print(f"WandB: {'enabled' if args.use_wandb else 'disabled'}")
 print("=" * 70)
 
-if args.model_artifact:
-    print(f"\nDownloading model from WandB artifact: {args.model_artifact}")
+# Download adapter from WandB if artifact is specified
+adapter_path = None
+if args.adapter_artifact:
+    print(f"\nDownloading adapter from WandB artifact: {args.adapter_artifact}")
     api = wandb.Api()
 
-    if args.wandb_entity:
-        artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.model_artifact}"
-    else:
-        artifact_ref = f"{args.wandb_project}/{args.model_artifact}"
+    artifact_parts = args.adapter_artifact.split('/')
 
+    if len(artifact_parts) == 3:
+        # Full path provided
+        artifact_ref = args.adapter_artifact
+    elif len(artifact_parts) == 2:
+        # Project/artifact provided
+        if args.wandb_entity:
+            artifact_ref = f"{args.wandb_entity}/{args.adapter_artifact}"
+        else:
+            # Use default entity from wandb login
+            artifact_ref = args.adapter_artifact
+    else:
+        # Just artifact name
+        if args.wandb_entity:
+            artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.adapter_artifact}"
+        else:
+            # Let WandB resolve using default entity
+            artifact_ref = f"{args.wandb_project}/{args.adapter_artifact}"
+
+    print(f"Resolving artifact: {artifact_ref}")
     artifact = api.artifact(artifact_ref, type="model")
-    artifact_dir = artifact.download()
-    args.adapter_path = artifact_dir
-    print(f"✓ Model downloaded to: {artifact_dir}")
+    adapter_path = artifact.download()
+    print(f"✓ Adapter downloaded to: {adapter_path}")
 
 # Initialize WandB if enabled
 wandb_run = None
@@ -171,7 +214,7 @@ if args.use_wandb:
     tags = args.wandb_tags if args.wandb_tags else []
     tags.append("inference")
     tags.append(args.dataset)
-    if args.adapter_path:
+    if args.adapter_artifact:
         tags.append("finetuned")
     else:
         tags.append("baseline")
@@ -188,13 +231,13 @@ if args.use_wandb:
     print(f"✓ WandB run initialized: {wandb_run.url}")
 
     # Link model artifact to this run for lineage tracking
-    if args.model_artifact:
+    if args.adapter_artifact:
         if args.wandb_entity:
-            artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.model_artifact}"
+            artifact_ref = f"{args.wandb_entity}/{args.wandb_project}/{args.adapter_artifact}"
         else:
-            artifact_ref = f"{args.wandb_project}/{args.model_artifact}"
+            artifact_ref = f"{args.wandb_project}/{args.adapter_artifact}"
         wandb_run.use_artifact(artifact_ref, type="model")
-        print(f"✓ Linked model artifact to run")
+        print(f"✓ Linked adapter artifact to run")
 
 
 
@@ -220,9 +263,9 @@ model = Qwen2VLForConditionalGeneration.from_pretrained(
 )
 
 # Load LoRA adapter if provided
-if args.adapter_path:
-    print(f"Loading LoRA adapter from {args.adapter_path}...")
-    model = PeftModel.from_pretrained(model, args.adapter_path)
+if adapter_path:
+    print(f"Loading LoRA adapter from {adapter_path}...")
+    model = PeftModel.from_pretrained(model, adapter_path)
 
 model.eval()
 
@@ -373,7 +416,8 @@ predictions_file = output_dir / f"{args.dataset}_predictions_{timestamp}.json"
 predictions_data = {
     "metadata": {
         "model": args.model_name,
-        "adapter_path": args.adapter_path,
+        "adapter_artifact": args.adapter_artifact,
+        "adapter_path": adapter_path,
         "dataset": args.dataset,
         "num_samples": len(results),
         "timestamp": timestamp,
