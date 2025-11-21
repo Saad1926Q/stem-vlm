@@ -5,6 +5,7 @@ Usage:
     python scripts/train.py --config configs/train_scienceqa.yaml
     python scripts/train.py --num_epochs 3 --max_samples 1000
     python scripts/train.py --config configs/train.yaml --learning_rate 5e-5
+    python scripts/train.py --train_cot  # Train on full reasoning (lecture + solution)
 """
 
 import sys
@@ -31,6 +32,8 @@ parser.add_argument('--config', type=str, help='Path to YAML config file')
 # Data args
 parser.add_argument('--max_samples', type=int, default=None,
                     help='Maximum number of samples to use for training/validation (None = all)')
+parser.add_argument('--train_cot', action='store_true', default=False,
+                    help='Train on full reasoning (lecture + solution) instead of just the answer')
 
 # Model args
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
@@ -84,6 +87,7 @@ if args.config:
 
     if 'data' in config:
         args.max_samples = config['data'].get('max_samples', args.max_samples)
+        args.train_cot = config['data'].get('train_cot', args.train_cot)
 
     if 'model' in config:
         args.model_name = config['model'].get('name', args.model_name)
@@ -129,7 +133,7 @@ if args.config:
 if args.run_name is None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_short = args.model_name.split('/')[-1].lower()
-    args.run_name = f"{model_short}-scienceqa-{timestamp}"
+    args.run_name = f"{model_short}-scienceqa{'-cot' if args.train_cot else ''}-{timestamp}"
 
 output_path = Path(args.output_dir) / args.run_name
 output_path.mkdir(parents=True, exist_ok=True)
@@ -158,10 +162,10 @@ print("=" * 70)
 
 
 print("\nLoading and formatting training data...")
-train_dataset = load_and_format_scienceqa(split='train', max_samples=args.max_samples)
+train_dataset = load_and_format_scienceqa(split='train', max_samples=args.max_samples, use_cot=args.train_cot)
 
 print("\nLoading and formatting validation data...")
-val_dataset = load_and_format_scienceqa(split='validation', max_samples=args.max_samples)
+val_dataset = load_and_format_scienceqa(split='validation', max_samples=args.max_samples, use_cot=args.train_cot)
 
 
 
@@ -285,7 +289,7 @@ if args.use_wandb:
     model_name = extract_model_name(args.model_name)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    artifact_name = f"{model_name}-{args.experiment_name}-{timestamp}"
+    artifact_name = f"{model_name}-{args.experiment_name}{'-cot' if args.train_cot else ''}-{timestamp}"
 
     final_metrics = {}
     if trainer.state.log_history:
@@ -333,6 +337,8 @@ if args.use_wandb:
 
     # Build tags
     tags = [model_name, args.experiment_name]
+    if args.train_cot:
+        tags.append("cot")
     tags.extend(args.experiment_tags)
 
     # Add dataset info tag

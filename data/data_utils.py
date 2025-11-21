@@ -5,9 +5,13 @@ Data utilities for ScienceQA dataset formatting.
 from datasets import load_dataset
 
 
-def format_sample(sample):
+def format_sample(sample, use_cot=False):
     """
     Convert a single sample to Unsloth training format.
+
+    Args:
+        sample: Dataset sample
+        use_cot: If True, include lecture + solution in assistant response
 
     Returns dict with:
         - messages: chat messages structure (for UnslothVisionDataCollator)
@@ -19,10 +23,24 @@ def format_sample(sample):
     image = sample.get('image')
     question = sample.get('question', '')
     answer = sample.get('answer', '')
+    lecture = sample.get('lecture', '')
+    solution = sample.get('solution', '')
 
     # Skip if missing required fields
     if image is None or not question or not answer:
         return None
+
+    # Build assistant response
+    if use_cot:
+        parts = ["Let me work through this step by step."]
+        if lecture and str(lecture).strip():
+            parts.append(f"\nThe key concept here is: {lecture}")
+        if solution and str(solution).strip():
+            parts.append(f"\nNow, let's solve this:\n{solution}")
+        parts.append(f"\nTherefore, the answer is: {answer}")
+        assistant_text = "\n".join(parts)
+    else:
+        assistant_text = str(answer)
 
     # Create messages structure that UnslothVisionDataCollator expects
     messages = [
@@ -36,7 +54,7 @@ def format_sample(sample):
         {
             "role": "assistant",
             "content": [
-                {"type": "text", "text": str(answer)}
+                {"type": "text", "text": assistant_text}
             ]
         }
     ]
@@ -48,13 +66,14 @@ def format_sample(sample):
     }
 
 
-def load_and_format_scienceqa(split='train', max_samples=None):
+def load_and_format_scienceqa(split='train', max_samples=None, use_cot=False):
     """
     Load ScienceQA dataset and format samples.
 
     Args:
         split: Dataset split ('train' or 'validation')
         max_samples: Maximum number of samples to process (None = all)
+        use_cot: If True, include lecture + solution in assistant response
 
     Returns:
         List of formatted samples
@@ -67,8 +86,8 @@ def load_and_format_scienceqa(split='train', max_samples=None):
         data = data.select(range(max_samples))
         print(f"Limited to {max_samples} samples")
 
-    print(f"Formatting {len(data)} samples...")
-    formatted = [format_sample(sample) for sample in data]
+    print(f"Formatting {len(data)} samples (use_cot={use_cot})...")
+    formatted = [format_sample(sample, use_cot=use_cot) for sample in data]
 
     # Filter out None values (samples with missing data)
     formatted = [s for s in formatted if s is not None]
