@@ -1,11 +1,53 @@
 """
 Evaluate model predictions using LLM-as-Judge (GPT-4o-mini).
 
-Usage:
-    export OPENAI_API_KEY="ab-..."
-    python scripts/evaluate.py \
-        --predictions experiments/baseline/mathverse_predictions_20250104.json \
-        --config configs/judge.yaml
+Usage Examples:
+
+1. Basic evaluation (standard predictions):
+   export OPENAI_API_KEY="sk-..."
+   python scripts/evaluate.py \
+       --predictions experiments/baseline/scienceqa_predictions_20250104.json \
+       --config configs/judge.yaml
+
+2. Evaluate Chain-of-Thought predictions (auto-detects from metadata):
+   python scripts/evaluate.py \
+       --predictions experiments/cot/scienceqa_predictions_20250104.json \
+       --config configs/judge.yaml
+
+3. With WandB logging:
+   python scripts/evaluate.py \
+       --predictions experiments/baseline/mathverse_predictions_20250104.json \
+       --config configs/judge.yaml \
+       --use_wandb \
+       --wandb_project stem-vlm \
+       --wandb_run_name "baseline-mathverse-eval" \
+       --wandb_tags evaluation baseline mathverse
+
+4. Update model artifact with accuracy metrics:
+   python scripts/evaluate.py \
+       --predictions experiments/baseline/scienceqa_predictions_20250104.json \
+       --config configs/judge.yaml \
+       --model_artifact "my-model:v0" \
+       --use_wandb
+
+5. Override judge settings:
+   python scripts/evaluate.py \
+       --predictions experiments/baseline/scienceqa_predictions_20250104.json \
+       --config configs/judge.yaml \
+       --judge_model "gpt-4o" \
+       --temperature 0.0
+
+6. Custom output directory:
+   python scripts/evaluate.py \
+       --predictions experiments/baseline/scienceqa_predictions_20250104.json \
+       --config configs/judge.yaml \
+       --output_dir experiments/baseline/evaluation_results
+
+Notes:
+- CoT evaluation is automatically enabled when predictions contain 'uses_cot: true' metadata
+- For CoT predictions, the script evaluates both answer correctness AND reasoning quality
+- Model artifacts are updated with dataset-specific accuracy (e.g., 'accuracy_scienceqa')
+- CoT artifacts get both 'answer_accuracy_<dataset>' and 'reasoning_accuracy_<dataset>'
 """
 
 import sys

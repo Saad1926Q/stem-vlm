@@ -32,3 +32,22 @@ stem-vlm/
     experiments/          # all results saved here
         baseline/
 ```
+
+### quick summary of the experiments so far
+
+- **baseline (no finetuning):**  
+  tested qwen2-vl-2b straight out of the box.  
+  **ScienceQA: 2.68%**, **MathVerse: 11.02%** → basically guessing.
+
+- **finetuning on just the correct option:**  
+  trained the model to predict only the answer label.  
+  **ScienceQA: 29.95%**, **MathVerse: 0.71%**.  
+  I noticed that the model was outputting “1” a lot, so I had my doubts.
+
+- **cot (reasoning) analysis:**  
+  forced the model to produce reasoning + evaluated it separately.  
+  answer accuracy ~27%, reasoning ~23% on ScienceQA.
+  Saw that whenever the answer is wrong, the reasoning is also wrong.
+
+- **next steps:**  
+  finetune on **full solutions** instead of labels, then move on to bigger models
