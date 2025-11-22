@@ -94,6 +94,9 @@ parser.add_argument('--wandb_tags', type=str, nargs='+', default=None, help='Wan
 parser.add_argument('--model_artifact', type=str, default=None,
                     help='Model artifact name to update with accuracy (e.g., "Qwen2-VL-2B-Instruct-baseline-20250107_123456:v0")')
 
+parser.add_argument('--use_cot', action='store_true', default=None,
+                    help='CoT evaluation mode')
+
 args = parser.parse_args()
 
 load_dotenv()
@@ -188,8 +191,10 @@ print(f"✓ Base model: {metadata.get('model', 'unknown')}")
 print("=" * 70)
 
 
-# Detect if this is a CoT evaluation
-uses_cot = metadata.get('uses_cot', False)
+if args.use_cot is not None:
+    uses_cot = args.use_cot
+else:
+    uses_cot = metadata.get('uses_cot', False)
 
 if uses_cot:
     system_prompt = config['prompts']['cot_system']

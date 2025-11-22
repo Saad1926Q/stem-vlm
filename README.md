@@ -49,5 +49,11 @@ stem-vlm/
   answer accuracy ~27%, reasoning ~23% on ScienceQA.
   Saw that whenever the answer is wrong, the reasoning is also wrong.
 
-- **next steps:**  
-  finetune on **full solutions** instead of labels, then move on to bigger models
+- **finetuning on full solutions:**
+  trained the model on both the reasoning process and the final answer for ScienceQA.
+  **Total samples: 2017**
+  **Answer Accuracy: 11.20%**, **Reasoning Accuracy: 18.00%**
+  Breakdown: Both Correct: 114 (5.7%), Answer Correct + Reasoning Wrong: 112, Answer Wrong + Reasoning Correct: 249, Both Wrong: 1542
+
+- **next steps:**
+  move on to bigger models, also explore the idea from MM-COT paper

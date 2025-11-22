@@ -325,6 +325,7 @@ if args.use_wandb:
         "max_samples": args.max_samples if args.max_samples else "all",
         "train_samples": len(train_dataset),
         "val_samples": len(val_dataset) if val_dataset else 0,
+        "train_cot": args.train_cot,
 
         # Performance metrics
         **final_metrics,
