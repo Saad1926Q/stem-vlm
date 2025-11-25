@@ -107,6 +107,7 @@ parser.add_argument('--config', type=str, help='Path to YAML config file')
 parser.add_argument('--model_name', type=str, default='Qwen/Qwen2-VL-2B-Instruct')
 parser.add_argument('--adapter_artifact', type=str, default=None, help='WandB artifact name for LoRA adapter (e.g., "my-model:v0" or "entity/project/my-model:v0")')
 parser.add_argument('--dtype', type=str, default='bfloat16', choices=['bfloat16', 'float16', 'float32'])
+parser.add_argument('--use_unsloth', action='store_true', help='Use Unsloth for faster inference and lower VRAM usage')
 
 # Dataset args
 parser.add_argument('--dataset', type=str, default='mathverse', choices=['mathverse', 'scienceqa'])
@@ -141,6 +142,7 @@ if args.config:
         args.model_name = config['model'].get('name', args.model_name)
         args.adapter_artifact = config['model'].get('adapter_artifact', args.adapter_artifact)
         args.dtype = config['model'].get('dtype', args.dtype)
+        args.use_unsloth = config['model'].get('use_unsloth', args.use_unsloth)
     if 'dataset' in config:
         args.dataset = config['dataset'].get('name', args.dataset)
         args.num_samples = config['dataset'].get('num_samples', args.num_samples)
@@ -162,6 +164,7 @@ print("=" * 70)
 print("STEM-VLM Inference")
 print("=" * 70)
 print(f"Model: {args.model_name}")
+print(f"Use Unsloth: {args.use_unsloth}")
 if args.adapter_artifact:
     print(f"Adapter Artifact: {args.adapter_artifact}")
 print(f"Dataset: {args.dataset}")
@@ -254,25 +257,47 @@ dtype_map = {
 }
 dtype = dtype_map[args.dtype]
 
-# Load model
-model = Qwen2VLForConditionalGeneration.from_pretrained(
-    args.model_name,
-    torch_dtype=dtype,
-    device_map="auto",
-    trust_remote_code=True
-)
+# Load model conditionally based on use_unsloth flag
+if args.use_unsloth:
+    print("Loading model with Unsloth optimizations...")
+    from unsloth import FastVisionModel
 
-# Load LoRA adapter if provided
-if adapter_path:
-    print(f"Loading LoRA adapter from {adapter_path}...")
-    model = PeftModel.from_pretrained(model, adapter_path)
+    model, processor = FastVisionModel.from_pretrained(
+        args.model_name,
+        load_in_4bit=False,
+        dtype=dtype,
+    )
 
-model.eval()
+    # Load LoRA adapter if provided
+    if adapter_path:
+        print(f"Loading LoRA adapter from {adapter_path}...")
+        model = PeftModel.from_pretrained(model, adapter_path)
 
-print(f"Model loaded on {model.device}")
+    # Enable native 2x faster inference
+    FastVisionModel.for_inference(model)
+else:
+    print("Loading model with standard HuggingFace transformers...")
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        args.model_name,
+        torch_dtype=dtype,
+        device_map="auto",
+        trust_remote_code=True
+    )
+
+    # Load LoRA adapter if provided
+    if adapter_path:
+        print(f"Loading LoRA adapter from {adapter_path}...")
+        model = PeftModel.from_pretrained(model, adapter_path)
+
+    model.eval()
+
+print(f"✓ Model loaded on {model.device}")
+
+# Print VRAM usage after model loading
 if torch.cuda.is_available():
-    mem_gb = torch.cuda.memory_allocated() / 1024**3
-    print(f"GPU memory: {mem_gb:.2f} GB")
+    allocated = torch.cuda.memory_allocated() / 1024**3
+    reserved = torch.cuda.memory_reserved() / 1024**3
+    print(f"VRAM - Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB")
 
 
 if args.dataset == 'mathverse':
@@ -284,8 +309,6 @@ if args.num_samples:
     dataset = dataset.select(range(min(args.num_samples, len(dataset))))
 
 print(f"✓ Loaded {len(dataset)} samples")
-
-
 
 results = []
 
